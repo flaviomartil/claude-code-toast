@@ -2,93 +2,84 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/src"
-HOOKS_DIR="$HOME/.claude/hooks"
-NOTIFY_SCRIPT="$SRC_DIR/notify.js"
+NOTIFY_SCRIPT="$SCRIPT_DIR/src/notify.js"
+CONFIG_DIR="$HOME/.claude/ccnotify"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+SETTINGS_FILE="$HOME/.claude/settings.json"
+BUN="$(which bun 2>/dev/null || echo "")"
 
-if ! command -v bun &>/dev/null; then
-  echo "Error: bun is required. Install it: https://bun.sh"
+if [ -z "$BUN" ]; then
+  echo "  Error: bun is required. Install it: https://bun.sh"
   exit 1
 fi
 
 if ! command -v powershell.exe &>/dev/null; then
-  echo "Error: powershell.exe not found. This tool requires WSL2 on Windows."
+  echo "  Error: powershell.exe not found. This tool requires WSL2 on Windows."
   exit 1
 fi
 
-SETTINGS_FILE="$HOME/.claude/settings.json"
+mkdir -p "$CONFIG_DIR"
+mkdir -p "$(dirname "$SETTINGS_FILE")"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+  cat > "$CONFIG_FILE" << 'CONF'
+{
+  "duration": 6,
+  "position": "bottom-right",
+  "minElapsed": 5,
+  "theme": "claude",
+  "opacity": 0.92,
+  "sound": {
+    "enabled": true,
+    "file": null
+  }
+}
+CONF
+  echo "  Created default config at $CONFIG_FILE"
+fi
 
 if [ ! -f "$SETTINGS_FILE" ]; then
-  mkdir -p "$HOME/.claude"
   echo '{}' > "$SETTINGS_FILE"
 fi
 
-HOOK_CMD="$(which bun) $NOTIFY_SCRIPT"
+HOOK_CMD="$BUN $NOTIFY_SCRIPT"
 
-HOOK_ENTRY=$(cat <<EOF
-{
-  "matcher": "",
-  "hooks": [
-    {
-      "type": "command",
-      "command": "$HOOK_CMD"
-    }
-  ]
+RESULT=$("$BUN" -e "
+const fs = require('fs');
+const cfg = JSON.parse(fs.readFileSync('$SETTINGS_FILE', 'utf8'));
+const hooks = cfg.hooks || {};
+const cmd = '$HOOK_CMD';
+const entry = { matcher: '', hooks: [{ type: 'command', command: cmd }] };
+const events = ['Stop', 'Notification', 'UserPromptSubmit'];
+const added = [];
+for (const ev of events) {
+  const list = hooks[ev] || [];
+  const has = list.some(e => e.hooks?.some(h => h.command?.includes('notify.js')));
+  if (!has) {
+    list.push(entry);
+    hooks[ev] = list;
+    added.push(ev);
+  }
 }
-EOF
-)
+if (added.length) {
+  cfg.hooks = hooks;
+  fs.writeFileSync('$SETTINGS_FILE', JSON.stringify(cfg, null, 2));
+}
+console.log(added.join(' ') || 'none');
+")
 
-HAS_HOOKS=$(python3 -c "
-import json, sys
-with open('$SETTINGS_FILE') as f:
-    cfg = json.load(f)
-hooks = cfg.get('hooks', {})
-cmd = '$HOOK_CMD'
-found = []
-for event in ['Stop', 'Notification', 'UserPromptSubmit']:
-    entries = hooks.get(event, [])
-    for e in entries:
-        for h in e.get('hooks', []):
-            if cmd in h.get('command', ''):
-                found.append(event)
-                break
-print(','.join(found))
-" 2>/dev/null || echo "")
-
-MISSING=""
-for EVENT in Stop Notification UserPromptSubmit; do
-  if [[ ! "$HAS_HOOKS" == *"$EVENT"* ]]; then
-    MISSING="$MISSING $EVENT"
-  fi
-done
-
-if [ -z "$MISSING" ]; then
-  echo "All hooks already configured. Nothing to do."
-  exit 0
+echo ""
+if [ "$RESULT" = "none" ]; then
+  echo "  All hooks already configured."
+else
+  echo "  Hooks added: $RESULT"
 fi
-
-python3 -c "
-import json
-with open('$SETTINGS_FILE') as f:
-    cfg = json.load(f)
-hooks = cfg.setdefault('hooks', {})
-cmd = '$HOOK_CMD'
-entry = {'matcher': '', 'hooks': [{'type': 'command', 'command': cmd}]}
-for event in '$MISSING'.split():
-    existing = hooks.get(event, [])
-    already = any(cmd in h.get('command', '') for e in existing for h in e.get('hooks', []))
-    if not already:
-        existing.append(entry)
-        hooks[event] = existing
-with open('$SETTINGS_FILE', 'w') as f:
-    json.dump(cfg, f, indent=2)
-"
-
-echo ""
-echo "  claude-code-toast installed!"
-echo ""
-echo "  Hooks added for:$MISSING"
+echo "  Config: $CONFIG_FILE"
 echo "  Settings: $SETTINGS_FILE"
+echo ""
+
+echo "  Testing notification..."
+"$BUN" "$NOTIFY_SCRIPT" --test
 echo ""
 echo "  Restart Claude Code to activate."
 echo ""

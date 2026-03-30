@@ -4,38 +4,40 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 NOTIFY_SCRIPT="$SCRIPT_DIR/src/notify.js"
 SETTINGS_FILE="$HOME/.claude/settings.json"
+BUN="$(which bun 2>/dev/null || echo "")"
+
+if [ -z "$BUN" ]; then
+  echo "  Error: bun not found."
+  exit 1
+fi
 
 if [ ! -f "$SETTINGS_FILE" ]; then
-  echo "No settings file found. Nothing to uninstall."
+  echo "  No settings file found. Nothing to uninstall."
   exit 0
 fi
 
-HOOK_CMD="$(which bun) $NOTIFY_SCRIPT"
-
-python3 -c "
-import json
-with open('$SETTINGS_FILE') as f:
-    cfg = json.load(f)
-hooks = cfg.get('hooks', {})
-changed = False
-for event in list(hooks.keys()):
-    entries = hooks[event]
-    filtered = [e for e in entries if not any('$NOTIFY_SCRIPT' in h.get('command', '') for h in e.get('hooks', []))]
-    if len(filtered) != len(entries):
-        changed = True
-        if filtered:
-            hooks[event] = filtered
-        else:
-            del hooks[event]
-if changed:
-    with open('$SETTINGS_FILE', 'w') as f:
-        json.dump(cfg, f, indent=2)
-    print('Hooks removed successfully.')
-else:
-    print('No hooks found to remove.')
+"$BUN" -e "
+const fs = require('fs');
+const cfg = JSON.parse(fs.readFileSync('$SETTINGS_FILE', 'utf8'));
+const hooks = cfg.hooks || {};
+let changed = false;
+for (const ev of Object.keys(hooks)) {
+  const before = hooks[ev].length;
+  hooks[ev] = hooks[ev].filter(e => !e.hooks?.some(h => h.command?.includes('notify.js')));
+  if (hooks[ev].length !== before) changed = true;
+  if (!hooks[ev].length) delete hooks[ev];
+}
+if (changed) {
+  cfg.hooks = hooks;
+  fs.writeFileSync('$SETTINGS_FILE', JSON.stringify(cfg, null, 2));
+  console.log('  Hooks removed.');
+} else {
+  console.log('  No hooks found to remove.');
+}
 "
 
 echo ""
 echo "  claude-code-toast uninstalled."
+echo "  Config preserved at ~/.claude/ccnotify/config.json"
 echo "  Restart Claude Code to apply."
 echo ""
