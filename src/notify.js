@@ -15,6 +15,7 @@ const DEFAULT_CONFIG = {
   minElapsed: 5,
   theme: "claude",
   opacity: 0.92,
+  ignoreProjects: [],
   sound: {
     enabled: true,
     file: null,
@@ -78,6 +79,8 @@ try {
 const config = loadConfig();
 const cwd = input.cwd || "";
 const project = cwd.split("/").pop() || "Claude";
+const ignoreList = Array.isArray(config.ignoreProjects) ? config.ignoreProjects : [];
+if (ignoreList.some(p => p && (cwd.includes(p) || project.includes(p)))) process.exit(0);
 const event = input.hook_event_name || "Stop";
 const sessionId = input.session_id || "unknown";
 
